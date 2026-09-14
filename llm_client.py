@@ -21,6 +21,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
+from rich import print as rprint
 import sqlite3
 
 load_dotenv()
@@ -38,39 +39,90 @@ load_dotenv()
 #   - max_retries: 최대 재시도 허용 횟수
 #   - answer: 최종 답변
 class TranslateState(TypedDict, total=False):
-    pass  # TODO: 위 힌트 참고해서 필드 채우기
+    mode: Literal['translate', 'summarize']
+    source_text: str
+    draft: str
+    constraint: str
 
-
-# TODO: intent_node에서 LLM 구조화 출력에 쓸 Pydantic 모델
-# 레시피봇의 IntentResult처럼, mode: Literal["translate", "summarize"] 같은 필드가 필요할 것
 class IntentResult(BaseModel):
-    pass  # TODO
+    mode: Literal['translate', 'summarize'] = Field(
+        description="사용자가 원하는 작업이 번역인지 요약인지 판단한다. "
+                    "사용자가 명시적으로 언급하지 않으면 기본값으로 translate를 선택한다."
+    )
+    source_text: str = Field(
+        description="사용자 입력에서 '번역해줘', '요약해줘', '~해줘:' 같은 지시 표현은 제외하고, "
+                    "실제로 번역하거나 요약할 대상이 되는 원문 텍스트만 추출한다."
+    )
+    constraint: str = Field(
+        description="사용자가 요청한 추가 조건이나 제약사항만 담는다 "
+                    "(예: '5줄로', '간단하게', '격식체로' 같은 길이·형식·톤 요청). "
+                    "mode를 나타내는 동사('번역해줘', '요약해줘' 등)는 포함하지 않는다. "
+                    "특별한 조건이 없으면 빈 문자열로 둔다."
+    )
+
+class DraftResult(BaseModel):
+    draft: str = Field(
+        description="사용자가 요청한 mode(번역 또는 요약)에 따른 결과물만 담는다. "
+                     "'요청하신 내용을 요약해 드립니다' 같은 인사말이나 안내 문구, "
+                     "부연 설명은 포함하지 않고, 번역문 또는 요약문 본문만 작성한다."
+    )
+
 
 
 llm = init_chat_model('gemini-3.1-flash-lite', model_provider='google_genai')
-# TODO: intent_node에서 쓸 구조화 출력 LLM
-# structured_llm = llm.with_structured_output(IntentResult)
-
+structed_llm = llm.with_structured_output(IntentResult)
 
 def intent_node(state: TranslateState) -> TranslateState:
     """
     사용자 입력에서 mode(번역/요약)와 source_text(원문)를 뽑아낸다.
-    힌트: 레시피봇 intent_node의 structured_llm.invoke(prompt) 패턴 참고.
     """
-    # TODO
-    pass
+    prompt = f"""
+        너는 사용자의 문장이 번역인지 요약인지에 대한 의도를 파악해서 mode에 대해 추출하는 어시스턴트야.
+
+        mode는 다음 두가지 중 하나로 판단해
+        "translate" : ~번역해줘
+        "summarize" : ~요약해줘     
+
+        사용자 입력: "{state['source_text']}"   
+    """
+
+    try:
+        raw_response = structed_llm.invoke(prompt)
+        result = raw_response
+
+    except Exception as e:
+        return {"mode": "translate", 'source_text': ""}
+
+    return {"mode" : result.mode, "source_text": result.source_text, "constraint": result.constraint}
 
 
 def generate_node(state: TranslateState) -> TranslateState:
     """
-    mode에 따라 번역문 또는 요약문 '초안'을 생성한다.
-    생각해볼 것: 이 노드는 항상 처음부터 새로 생성만 하는지,
-    아니면 재시도 흐름에서도 호출되는지 - revise_node와 역할을 어떻게 나눌지 직접 설계.
+    mode에 따라 번역문 또는 요약문 초안을 생성한다.
     """
-    # TODO
-    pass
+    llm = init_chat_model('gemini-3.1-flash-lite', model_provider='google_genai')
+    prompt = f"""
+            사용자 질문: {state['source_text']}
 
+            너는 사용자에게 번역 혹은 요약을 해주는 친절한 어시스턴스야.
 
+            아래는 조건 따라 맞는 답변을 하면돼.
+            - 조건: {state['mode']} , 제약: {state['constraint']}
+            - mode가 translate라면 번역을 해주고, mode가 summarize라면 요약을 해주면돼. 
+            - 제약을 읽고 해당 제약에 꼭 고려해서 답변해줘
+            - 자연스러운 어투로 답변해줘.
+            
+    """
+    try:
+        structed_llm = llm.with_structured_output(DraftResult)
+        raw_response = structed_llm.invoke(prompt)
+
+    except Exception as e:
+        return {'draft': ""}
+
+    return {'draft': raw_response.draft}
+
+    
 def verify_node(state: TranslateState) -> TranslateState:
     """
     source_text와 draft를 LLM에게 같이 주고, 스스로 비판(self-critique)하게 한다.
@@ -134,6 +186,51 @@ def ask(agent, user_message: str, thread_id: str) -> str:
 
 
 if __name__ == "__main__":
-    # TODO: 테스트 케이스 작성
-    # 예: 번역 요청 / 요약 요청 / 일부러 부실한 초안이 나와서 재시도가 도는 경우 등
-    pass
+
+
+    source = """
+    이재명 대통령의 국정수행 지지율이 33.8%를 기록했다는 여론조사 결과가 오늘(14일) 나왔습니다.
+
+리얼미터가 에너지경제신문 의뢰로 지난 7일부터 11일까지 전국 18세 이상 유권자 2515명을 대상으로 조사한 결과 이 대통령의 국정수행 긍정 평가는 33.8%로 집계됐습니다.
+
+이는 직전 리얼미터 조사 대비 3.6%포인트 떨어진 수치입니다.
+
+반면 부정 평가는 직전 조사보다 3.8%포인트 오른 63.3%로 나타났습니다.
+
+긍정 평가와 부정 평가 간 격차는 29.5%포인트로, 오차범위 밖이었습니다.
+정당 지지도 조사에서는 국민의힘이 더불어민주당을 앞섰습니다.
+
+지난 10일부터 11일까지 전국 18세 이상 유권자 1003명을 대상으로 진행한 정당 지지도 조사에서 민주당은 36.1%, 국민의힘은 42.1%로 집계됐습니다.
+
+민주당은 직전 조사 대비 5.7%포인트 하락했고 국민의힘은 4.5%포인트 상승했습니다.
+
+양당 격차는 6.0%포인트로, 오차범위 안이었습니다.
+
+이밖에 조국혁신당은 4.7%, 개혁신당 1.3%, 진보당 1.3%, 기타 정당 2.3%로 나타났습니다.
+
+지지 정당이 없는 무당층은 12.2%로 집계됐습니다.
+
+리얼미터는 "국민의힘은 정부의 2기 개각 인선 논란 등 국정 현안에 대한 반사이익 속에 20대 청년층과 충청·PK 지역층이 대거 결집하며 지지율 상승을 이끈 것으로 판단된다"고 했습니다.
+
+민주당에 대해선 "여당으로서 부동산 정책 불확실성과 2기 개각 인사 논란 등 국정 현안 부담이 겹치며 대통령 지지율 하락과 연동해 20대 청년층 및 진보층의 큰 폭 지지 이탈로 지지율이 하락한 것으로 보인다"고 해석했습니다.
+
+두 조사는 모두 무선 자동응답 전화조사 방식으로 진행됐습니다.
+
+표본오차는 대통령 국정수행 평가가 95% 신뢰수준에 ±2.0%포인트, 정당 지지도 조사가 95% 신뢰수준에 ±3.1%포인트입니다.
+
+응답률은 대통령 국정수행 평가가 4.5%, 정당 지지도 조사가 3.6%입니다.
+
+
+
+"""
+
+
+
+    state = {"source_text": f'{source} 이글 요약해줘'}
+    intent_result = intent_node(state)
+    state.update(intent_result)   # state에 mode, source_text 합치기
+    rprint("intent 결과:", state)
+
+    # 그 state를 그대로 generate_node에 넘기기
+    generate_result = generate_node(state)
+    rprint("generate 결과:", generate_result)

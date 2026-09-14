@@ -10,3 +10,5 @@ langchain-google-genai
 streamlit
 python-dotenv
 pydantic
+rich
+langgraph-checkpoint-sqlite
