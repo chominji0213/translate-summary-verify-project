@@ -1,19 +1,3 @@
-"""
-번역/요약 검증봇 - LangGraph StateGraph
-(5-node: intent -> generate -> verify -> (revise <-> verify 사이클) -> finalize)
-
-## 이 프로젝트의 핵심 학습 목표
-- LangGraph의 사이클(cycle): 조건에 따라 그래프가 "이전 노드로 되돌아가는" 구조
-- 무한 루프를 막기 위한 재시도 횟수(retry counter) 관리
-
-## 노드 구성 (설계 메모 - 세부 구현은 직접)
-1. intent_node   : 사용자가 번역/요약 중 뭘 원하는지, 원문이 뭔지 파악
-2. generate_node : 초안(번역문 또는 요약문) 생성
-3. verify_node   : 원문과 초안을 비교해서 LLM 스스로 비판 (self-critique)
-4. verify_router : 비판 결과에 따라 통과(finalize) / 재시도(revise) 분기
-5. revise_node   : 비판 내용을 반영해 재생성 -> 다시 verify_node로 (여기가 '사이클' 지점)
-6. finalize_node : 통과했거나 재시도 소진 시 최종 답변 정리
-"""
 from typing import TypedDict, Literal
 from pydantic import BaseModel, Field
 from langchain.chat_models import init_chat_model
@@ -215,12 +199,12 @@ def revise_node(state: TranslateState) -> TranslateState:
 def finalize_node(state: TranslateState) -> TranslateState:
     """
     검증을 통과했거나 재시도를 다 쓴 경우, 최종 answer를 정리한다.
-    - 통과한 경우: draft를 그대로 혹은 다듬어서 answer로
-    - 재시도 소진 + 여전히 invalid인 경우: 사용자에게 뭐라고 안내할지 고민
-      (레시피봇 generate_node의 '결과 없음' 처리 참고)
     """
     # TODO
-    pass
+    if state['is_valid']:
+        return {'answer': state['draft']}
+    else:
+        return {'answer': '결과없음'}
 
 
 def build_graph():
@@ -243,66 +227,4 @@ def ask(agent, user_message: str, thread_id: str) -> str:
 
 
 if __name__ == "__main__":
-
-
-    source = """
-    이재명 대통령의 국정수행 지지율이 33.8%를 기록했다는 여론조사 결과가 오늘(14일) 나왔습니다.
-
-리얼미터가 에너지경제신문 의뢰로 지난 7일부터 11일까지 전국 18세 이상 유권자 2515명을 대상으로 조사한 결과 이 대통령의 국정수행 긍정 평가는 33.8%로 집계됐습니다.
-
-이는 직전 리얼미터 조사 대비 3.6%포인트 떨어진 수치입니다.
-
-반면 부정 평가는 직전 조사보다 3.8%포인트 오른 63.3%로 나타났습니다.
-
-긍정 평가와 부정 평가 간 격차는 29.5%포인트로, 오차범위 밖이었습니다.
-정당 지지도 조사에서는 국민의힘이 더불어민주당을 앞섰습니다.
-
-지난 10일부터 11일까지 전국 18세 이상 유권자 1003명을 대상으로 진행한 정당 지지도 조사에서 민주당은 36.1%, 국민의힘은 42.1%로 집계됐습니다.
-
-민주당은 직전 조사 대비 5.7%포인트 하락했고 국민의힘은 4.5%포인트 상승했습니다.
-
-양당 격차는 6.0%포인트로, 오차범위 안이었습니다.
-
-이밖에 조국혁신당은 4.7%, 개혁신당 1.3%, 진보당 1.3%, 기타 정당 2.3%로 나타났습니다.
-
-지지 정당이 없는 무당층은 12.2%로 집계됐습니다.
-
-리얼미터는 "국민의힘은 정부의 2기 개각 인선 논란 등 국정 현안에 대한 반사이익 속에 20대 청년층과 충청·PK 지역층이 대거 결집하며 지지율 상승을 이끈 것으로 판단된다"고 했습니다.
-
-민주당에 대해선 "여당으로서 부동산 정책 불확실성과 2기 개각 인사 논란 등 국정 현안 부담이 겹치며 대통령 지지율 하락과 연동해 20대 청년층 및 진보층의 큰 폭 지지 이탈로 지지율이 하락한 것으로 보인다"고 해석했습니다.
-
-두 조사는 모두 무선 자동응답 전화조사 방식으로 진행됐습니다.
-
-표본오차는 대통령 국정수행 평가가 95% 신뢰수준에 ±2.0%포인트, 정당 지지도 조사가 95% 신뢰수준에 ±3.1%포인트입니다.
-
-응답률은 대통령 국정수행 평가가 4.5%, 정당 지지도 조사가 3.6%입니다.
-
-
-
-"""
-
-
-
-    state = {"source_text": f'{source} 이글 요약해줘', "retry_count": 0, "max_retries": 3}
-    intent_result = intent_node(state)
-    state.update(intent_result)
-    rprint("intent 결과:", state)
-
-    generate_result = generate_node(state)
-    state.update(generate_result)
-    rprint("generate 결과:", generate_result)
-
-
-    state['draft'] = "국민의힘 지지율이 25.0%로 민주당(42.1%)에 크게 뒤처진 것으로 나타났습니다."
-
-
-    verify_result = verify_node(state)
-    state.update(verify_result)
-    rprint("verify 결과:", verify_result)
-
-    # is_valid가 False일 때만 revise_node로 넘어가는 흐름을 재현
-    if not state['is_valid']:
-        revise_result = revise_node(state)
-        state.update(revise_result)
-        rprint("revise 결과:", revise_result)
-        rprint("revise 후 retry_count:", state['retry_count'])
+    pass
