@@ -200,7 +200,6 @@ def finalize_node(state: TranslateState) -> TranslateState:
     """
     검증을 통과했거나 재시도를 다 쓴 경우, 최종 answer를 정리한다.
     """
-    # TODO
     if state['is_valid']:
         return {'answer': state['draft']}
     else:
