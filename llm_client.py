@@ -26,18 +26,6 @@ import sqlite3
 
 load_dotenv()
 
-
-# TODO: State 설계
-# 힌트: 레시피봇의 RecipeState(TypedDict, total=False)를 참고해서
-# 이번엔 어떤 필드가 필요할지 생각해보기. 예:
-#   - mode: "translate" 인지 "summarize" 인지
-#   - source_text: 원문
-#   - draft: 현재까지 생성된 초안
-#   - critique: verify_node가 남긴 비판/피드백
-#   - is_valid: 검증 통과 여부 (bool)
-#   - retry_count: 지금까지 재시도한 횟수
-#   - max_retries: 최대 재시도 허용 횟수
-#   - answer: 최종 답변
 class TranslateState(TypedDict, total=False):
     mode: Literal['translate', 'summarize']
     source_text: str
@@ -45,6 +33,9 @@ class TranslateState(TypedDict, total=False):
     constraint: str
     is_valid: bool
     critique: str
+    retry_count: int
+    max_retries: int
+    answer = str
 
 class IntentResult(BaseModel):
     mode: Literal['translate', 'summarize'] = Field(
@@ -135,11 +126,7 @@ def generate_node(state: TranslateState) -> TranslateState:
 def verify_node(state: TranslateState) -> TranslateState:
     """
     source_text와 draft를 LLM에게 같이 주고, 스스로 비판(self-critique)하게 한다.
-    - 어떤 기준으로 비판할지 프롬프트 설계가 이 프로젝트의 핵심
-      (예: 의미가 왜곡되지 않았는지, 중요한 정보가 누락되지 않았는지 등)
-    - 결과를 is_valid(bool) + critique(str) 형태로 구조화해서 state에 반영
     """
-    # TODO
     prompt = f"""
         너는 번역/요약 결과를 엄격하게 검증하는 검수자야.
 
@@ -178,24 +165,53 @@ def verify_node(state: TranslateState) -> TranslateState:
 def verify_router(state: TranslateState) -> str:
     """
     verify_node 결과에 따라 다음 노드를 결정하는 라우터.
-    - is_valid가 True면 -> finalize
-    - is_valid가 False인데 retry_count < max_retries면 -> revise
-    - retry_count가 소진됐으면 -> finalize (실패/한계 처리)
-    힌트: 레시피봇의 branch_router(state) -> str 패턴 참고.
     """
-    # TODO
-    pass
+    if state['is_valid'] :
+        return 'finalize'
+    else:
+        if state['retry_count'] < state['max_retries']:
+            return 'revise'
+        else:
+            return 'finalize'        
 
 
 def revise_node(state: TranslateState) -> TranslateState:
     """
-    critique를 반영해서 draft를 재생성하고, retry_count를 1 증가시킨다.
-    이후 그래프는 다시 verify_node로 돌아간다 (사이클).
+    critique를 반영해서 draft를 재생성하고, retry_count를 1 증가시킨다. 이후 그래프는 다시 verify_node로 돌아간다
     """
-    # TODO
-    pass
+    prompt = f"""
+        너는 이전에 작성한 번역/요약 결과물을 검수 피드백에 맞춰 다시 작성하는 어시스턴트야.
+
+        아래는 원문, 이전에 작성했던 결과물, 그리고 그 결과물의 문제점(피드백)이야.
+        피드백에서 지적된 문제를 반드시 반영해서, 결과물을 다시 작성해줘.
+
+        - mode: {state['mode']} (translate면 번역, summarize면 요약)
+        - 제약: {state['constraint']}
+
+        [원문]
+        {state['source_text']}
+
+        [이전 결과물]
+        {state['draft']}
+
+        [문제점(피드백)]
+        {state['critique']}
+
+        위 피드백에서 지적된 문제만 정확히 고치고, 나머지는 원문에 충실하게 유지해줘.
+        인사말이나 부연 설명 없이 결과물 본문만 작성해줘.
+    """
+
+    try:
+        structed_llm = llm.with_structured_output(DraftResult)
+        raw_response = structed_llm.invoke(prompt)
+        new_retry_count = state['retry_count'] + 1
+    except Exception as e:
+        return {'draft': "", 'retry_count': state['retry_count'] + 1}        
 
 
+    return {'draft': raw_response.draft, 'retry_count': new_retry_count}
+    
+    
 def finalize_node(state: TranslateState) -> TranslateState:
     """
     검증을 통과했거나 재시도를 다 쓴 경우, 최종 answer를 정리한다.
@@ -267,16 +283,26 @@ if __name__ == "__main__":
 
 
 
-    state = {"source_text": f'{source} 이글 요약해줘'}
+    state = {"source_text": f'{source} 이글 요약해줘', "retry_count": 0, "max_retries": 3}
     intent_result = intent_node(state)
-    state.update(intent_result)   # state에 mode, source_text 합치기
+    state.update(intent_result)
     rprint("intent 결과:", state)
 
-    # 그 state를 그대로 generate_node에 넘기기
     generate_result = generate_node(state)
+    state.update(generate_result)
     rprint("generate 결과:", generate_result)
 
-    state.update(generate_result)
-    rprint("verify 전 state:", state)
+
+    state['draft'] = "국민의힘 지지율이 25.0%로 민주당(42.1%)에 크게 뒤처진 것으로 나타났습니다."
+
+
     verify_result = verify_node(state)
+    state.update(verify_result)
     rprint("verify 결과:", verify_result)
+
+    # is_valid가 False일 때만 revise_node로 넘어가는 흐름을 재현
+    if not state['is_valid']:
+        revise_result = revise_node(state)
+        state.update(revise_result)
+        rprint("revise 결과:", revise_result)
+        rprint("revise 후 retry_count:", state['retry_count'])
