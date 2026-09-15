@@ -19,7 +19,7 @@ class TranslateState(TypedDict, total=False):
     critique: str
     retry_count: int
     max_retries: int
-    answer = str
+    answer: str
 
 class IntentResult(BaseModel):
     mode: Literal['translate', 'summarize'] = Field(
@@ -208,22 +208,80 @@ def finalize_node(state: TranslateState) -> TranslateState:
 
 def build_graph():
     """
-    노드/엣지 구성. 여기서 처음으로 '사이클'을 만들게 된다.
-    힌트:
-      graph.add_edge('revise', 'verify')  # revise 다음 다시 verify로 -> 이게 사이클
-      graph.add_conditional_edges('verify', verify_router, {'finalize': 'finalize', 'revise': 'revise'})
-    나머지 흐름(START -> intent -> generate -> verify -> ... -> finalize -> END)은
-    레시피봇의 build_graph 구조를 참고해서 직접 짜보기.
+    노드/엣지 구성
     """
-    # TODO
-    pass
+    conn = sqlite3.connect('checkpoint.db', check_same_thread=False)
+    memory = SqliteSaver(conn)
+
+    graph = StateGraph(TranslateState)
+
+    graph.add_node('intent', intent_node)
+    graph.add_node('generate', generate_node)
+    graph.add_node('verify', verify_node)
+    graph.add_node('revise', revise_node)
+    graph.add_node('finalize', finalize_node)
+
+    graph.add_edge(START, 'intent')
+    graph.add_edge('intent', 'generate')
+    graph.add_edge('generate', 'verify')
+    graph.add_conditional_edges('verify', verify_router, {'revise': 'revise', 'finalize': 'finalize'})
+    graph.add_edge('revise', 'verify')
+    graph.add_edge('finalize', END)
+
+    agent = graph.compile(checkpointer=memory)
+
+    return agent
 
 
 def ask(agent, user_message: str, thread_id: str) -> str:
-    """레시피봇의 ask() 함수와 동일한 패턴."""
-    # TODO
-    pass
+    config = {'configurable': {'thread_id': thread_id}}
+    result = agent.invoke({'source_text': user_message, 'retry_count': 0, 'max_retries': 3}, config)
+
+    return result['answer']
 
 
 if __name__ == "__main__":
-    pass
+    agent = build_graph()
+    translate = """
+            The dominant sequence transduction models are based on complex recurrent or
+            convolutional neural networks that include an encoder and a decoder. The best
+            performing models also connect the encoder and decoder through an attention
+            mechanism. We propose a new simple network architecture, the Transformer,
+            based solely on attention mechanisms, dispensing with recurrence and convolutions
+            entirely. Experiments on two machine translation tasks show these models to
+            be superior in quality while being more parallelizable and requiring significantly
+            less time to train. Our model achieves 28.4 BLEU on the WMT 2014 Englishto-German translation task, improving over the existing best results, including
+            ensembles, by over 2 BLEU. On the WMT 2014 English-to-French translation task,
+            our model establishes a new single-model state-of-the-art BLEU score of 41.8 after
+            training for 3.5 days on eight GPUs, a small fraction of the training costs of the
+            best models from the literature. We show that the Transformer generalizes well to
+            other tasks by applying it successfully to English constituency parsing both with
+            large and limited training data.
+    """
+
+    summarize = """
+            미국 10년물 국채금리가 3년 만에 장중 연 5%를 넘어섰다. 2023년에는 5%를 찍은 직후 빠르게 하락했지만, 이번에는 상황이 다르다. 
+            고유가와 물가 상승 우려에 미국의 재정 부담, 인공지능(AI) 투자를 위한 회사채 발행까지 겹쳤다. 이번에도 5%가 천장일지, 새로운 바닥일지에 시장의 시선이 쏠리고 있다.
+            14일(현지시간) 월스트리트저널(WSJ)에 따르면 미 10년물 국채금리는 장중 5.017%까지 치솟았다(채권 가격은 하락). 이후 저가 매수세가 유입되면서 금리는 4.988%로 내려와 장을 마쳤다. 
+            스콧 크로너트 씨티 미국 주식전략가는 파이낸셜타임스(FT)에 5%를 “넘어서는 안 될 선(line in the sand)”이라고 진단했다. 
+            몰리 브룩스 TD증권 미국 금리전략가는 “10년물 금리 5%는 투자자들에게 중요한 심리적 기준선”이라며 “일부 투자자들이 저가 매수에 나설 지점으로 정해뒀을 수 있다”고 말했다.
+            뉴욕 증시도 일제히 하락했다. 이날 다우존스30 산업평균지수는 0.29%, 스탠더드앤드푸어스(S&P)500 지수는 0.48%, 나스닥종합지수는 0.56% 내렸다. 필라델피아반도체지수는 5.86% 급락했다. 
+            10년물 금리 5% 돌파가 부담을 더한 가운데, 인공지능(AI) 속도 조절 우려로 마이크론(-5.25%), 엔비디아(-3.36%) 등 반도체주 매도가 하락을 주도했다.
+            관건은 ‘금리 5%’가 이번에도 일시적인 고점에 그칠지다. 2023년 10월에도 10년물 금리는 장중 5%를 넘었지만 그날 다시 5% 아래로 내려왔다. 
+            이후 고용과 물가가 둔화하고 미 연방준비제도(Fed)가 긴축을 끝내면서 금리도 하락했다. 이번에는 상황이 다르다는 분석이 나온다. 
+            브렌트유가 이날 장중 배럴당 109.80달러까지 치솟는 등 길어지는 중동전쟁에 따른 고유가발 물가 불안이 이어지고 있다.
+            구조적인 금리 상승 압력도 만만치 않다. 재정 적자에 따른 국채 공급 확대와 AI 투자를 위한 기업의 대규모 회사채 발행까지 겹쳤다. 
+            블룸버그에 따르면 미 국채시장 규모는 2007년 약 4조5000억 달러에서 현재 약 32조 달러로 불어났다. 
+            정부와 기업이 동시에 자금을 조달하면서 장기채를 보유하는 투자자들이 더 높은 보상을 요구하고 있다는 분석이다. 
+            자크 그리피스 크레디트사이츠 거시전략가는 “금리 상승세가 지속할 수 있는 기저 요인이 많다”며 “10년물 금리가 5.5%까지 오를 수 있다”고 전망했다.
+            5%대 금리가 고착되면 실물경제와 증시의 부담도 커진다. 10년물 금리는 부동산 모기지, 자동차 대출과 회사채 등 장기 조달금리의 기준이다. 
+            WSJ에 따르면 미국 모기지 금리는 최근 다시 7%에 육박했다. 주식 투자자에게는 안전자산인 국채의 상대적 매력이 커진다. 
+            그레그 피터스 PGIM크레딧 공동 최고투자책임자(CIO)는 WSJ에 “금리를 낮출 촉매가 무엇일지 계속 자문하지만, 전통적인 경기침체 말고는 찾기 어렵다”며 “금리가 더 오르거나 높은 수준을 유지할 여건이 상당히 갖춰져 있다”고 말했다.
+            이제 시장의 시선은 15~16일(현지시간) 열리는 미 연방공개시장위원회(FOMC)로 향한다.
+            시카고상품거래소(CME) 페드워치에 따르면 금리 선물시장은 0.25%포인트 인상 가능성을 90% 넘게 반영하고 있다. 
+            Fed로선 금리를 올리면 이미 높아진 가계·기업의 차입 부담을 더 키우지만, 동결하면 물가 대응 의지를 의심받아 장기금리가 오히려 더 뛸 위험이 있다. 
+            에드 알후사이니 컬럼비아스레드니들 포트폴리오 매니저는 “금리를 올리지 않으면 대혼란(pandemonium)이 벌어질 것”이라며 “인플레이션(물가 상승) 위험이 커지면서 장기 국채금리가 급등할 것”이라고 짚었다.
+    """     
+
+    answer1 = ask(agent, f'{summarize}. 이 원본을 5줄로 요약해줘', "test-thread-1")
+    rprint(answer1)
