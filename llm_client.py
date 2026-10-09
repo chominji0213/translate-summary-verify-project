@@ -1,11 +1,9 @@
 from typing import TypedDict, Literal
 from pydantic import BaseModel, Field
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
-from rich import print as rprint
 import sqlite3
 
 load_dotenv()
@@ -75,7 +73,7 @@ def intent_node(state: TranslateState) -> TranslateState:
         raw_response = structed_llm.invoke(prompt)
         result = raw_response
 
-    except Exception as e:
+    except Exception:
         return {"mode": "translate", 'source_text': ""}
 
     return {"mode" : result.mode, "source_text": result.source_text, "constraint": result.constraint}
@@ -101,7 +99,7 @@ def generate_node(state: TranslateState) -> TranslateState:
         structed_llm = llm.with_structured_output(DraftResult)
         raw_response = structed_llm.invoke(prompt)
 
-    except Exception as e:
+    except Exception:
         return {'draft': ""}
 
     return {'draft': raw_response.draft}
@@ -140,7 +138,7 @@ def verify_node(state: TranslateState) -> TranslateState:
         structed_llm = llm.with_structured_output(VerifyResult)
         result = structed_llm.invoke(prompt)
 
-    except Exception as e:
+    except Exception:
             return {'is_valid': False, 'critique': ""}
 
     return {'is_valid': result.is_valid, 'critique': result.critique}
@@ -189,7 +187,7 @@ def revise_node(state: TranslateState) -> TranslateState:
         structed_llm = llm.with_structured_output(DraftResult)
         raw_response = structed_llm.invoke(prompt)
         new_retry_count = state['retry_count'] + 1
-    except Exception as e:
+    except Exception:
         return {'draft': "", 'retry_count': state['retry_count'] + 1}        
 
 
